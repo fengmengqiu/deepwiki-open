@@ -23,6 +23,7 @@ from api.openai_client import OpenAIClient
 from api.openrouter_client import OpenRouterClient
 from api.azureai_client import AzureAIClient
 from api.dashscope_client import DashscopeClient
+from api.litellm_client import LiteLLMClient
 from api.rag import RAG
 
 # Configure logging
@@ -254,8 +255,18 @@ async def handle_websocket_chat(websocket: WebSocket):
         supported_langs = configs["lang_config"]["supported_languages"]
         language_name = supported_langs.get(language_code, "English")
 
+        # Check if this is a wiki structure generation request
+        is_wiki_structure_request = "<wiki_structure>" in query or "wiki structure" in query.lower()
+
         # Create system prompt
-        if is_deep_research:
+        if is_wiki_structure_request:
+            # For wiki structure generation, use a minimal system prompt
+            # and let the user's detailed instructions guide the response
+            system_prompt = f"""You are an expert code analyst. Follow the user's instructions exactly.
+IMPORTANT: You MUST respond in {language_name} language.
+Return ONLY the XML structure requested, with no additional text or markdown code blocks."""
+            logger.info("Wiki structure generation request detected - using minimal system prompt")
+        elif is_deep_research:
             # Check if this is the first iteration
             is_first_iteration = research_iteration == 1
 
@@ -558,7 +569,26 @@ This file contains...
                 model_kwargs=model_kwargs,
                 model_type=ModelType.LLM
             )
-        else:
+        elif request.provider == "litellm":
+            logger.info(f"Using LiteLLM with model: {request.model}")
+
+            # Initialize LiteLLM client
+            model = LiteLLMClient()
+            model_kwargs = {
+                "model": request.model,
+                "stream": True,
+                "temperature": model_config["temperature"],
+                "max_tokens": 16384  # Ensure enough tokens for large wiki structure responses
+            }
+            # Note: Don't add top_p for LiteLLM as some models (e.g., Claude via Vertex AI)
+            # don't allow both temperature and top_p to be specified simultaneously
+
+            api_kwargs = model.convert_inputs_to_api_kwargs(
+                input=prompt,
+                model_kwargs=model_kwargs,
+                model_type=ModelType.LLM
+            )
+        elif request.provider == "google":
             # Initialize Google Generative AI model
             model = genai.GenerativeModel(
                 model_name=model_config["model"],
@@ -567,6 +597,23 @@ This file contains...
                     "top_p": model_config["top_p"],
                     "top_k": model_config["top_k"]
                 }
+            )
+        else:
+            # Unknown provider - log warning and try OpenAI-compatible approach
+            logger.warning(f"Unknown provider: {request.provider}, attempting OpenAI-compatible client")
+            model = OpenAIClient()
+            model_kwargs = {
+                "model": request.model,
+                "stream": True,
+                "temperature": model_config.get("temperature", 0.7)
+            }
+            if "top_p" in model_config:
+                model_kwargs["top_p"] = model_config["top_p"]
+
+            api_kwargs = model.convert_inputs_to_api_kwargs(
+                input=prompt,
+                model_kwargs=model_kwargs,
+                model_type=ModelType.LLM
             )
 
         # Process the response based on the provider
@@ -684,13 +731,62 @@ This file contains...
                     await websocket.send_text(error_msg)
                     # Close the WebSocket connection after sending the error message
                     await websocket.close()
-            else:
-                # Google Generative AI (default provider)
+            elif request.provider == "litellm":
+                try:
+                    # Get the response and handle it properly using the previously created api_kwargs
+                    logger.info("Making LiteLLM API call")
+                    response = await model.acall(api_kwargs=api_kwargs, model_type=ModelType.LLM)
+                    logger.info(f"LiteLLM response type: {type(response)}")
+                    # Handle streaming response from LiteLLM (OpenAI-compatible format)
+                    chunk_count = 0
+                    total_chars = 0
+                    async for chunk in response:
+                        chunk_count += 1
+                        choices = getattr(chunk, "choices", [])
+                        if len(choices) > 0:
+                            delta = getattr(choices[0], "delta", None)
+                            if delta is not None:
+                                text = getattr(delta, "content", None)
+                                if text is not None:
+                                    await websocket.send_text(text)
+                                    total_chars += len(text)
+                    logger.info(f"LiteLLM streaming completed with {chunk_count} chunks, {total_chars} total characters")
+                    # Add a small delay to ensure all data is flushed before closing
+                    import asyncio
+                    await asyncio.sleep(0.5)
+                    # Explicitly close the WebSocket connection after the response is complete
+                    await websocket.close()
+                except Exception as e_litellm:
+                    logger.error(f"Error with LiteLLM API: {str(e_litellm)}")
+                    error_msg = f"\nError with LiteLLM API: {str(e_litellm)}\n\nPlease check that you have set the LITELLM_API_KEY environment variable with a valid API key."
+                    await websocket.send_text(error_msg)
+                    # Close the WebSocket connection after sending the error message
+                    await websocket.close()
+            elif request.provider == "google":
+                # Google Generative AI
                 response = model.generate_content(prompt, stream=True)
                 for chunk in response:
                     if hasattr(chunk, 'text'):
                         await websocket.send_text(chunk.text)
                 await websocket.close()
+            else:
+                # Unknown provider - try OpenAI-compatible streaming
+                try:
+                    logger.info(f"Making API call for unknown provider: {request.provider}")
+                    response = await model.acall(api_kwargs=api_kwargs, model_type=ModelType.LLM)
+                    async for chunk in response:
+                        choices = getattr(chunk, "choices", [])
+                        if len(choices) > 0:
+                            delta = getattr(choices[0], "delta", None)
+                            if delta is not None:
+                                text = getattr(delta, "content", None)
+                                if text is not None:
+                                    await websocket.send_text(text)
+                    await websocket.close()
+                except Exception as e_unknown:
+                    logger.error(f"Error with {request.provider} API: {str(e_unknown)}")
+                    await websocket.send_text(f"\nError: {str(e_unknown)}")
+                    await websocket.close()
 
         except Exception as e_outer:
             logger.error(f"Error in streaming response: {str(e_outer)}")

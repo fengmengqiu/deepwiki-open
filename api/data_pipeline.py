@@ -446,7 +446,20 @@ def transform_documents_and_save_to_db(
     db.load(documents)
     db.transform(key="split_and_embed")
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
-    db.save_state(filepath=db_path)
+
+    try:
+        db.save_state(filepath=db_path)
+        logger.info(f"Successfully saved database to {db_path}")
+    except PermissionError as e:
+        logger.error(f"Permission denied when saving database to {db_path}: {e}")
+        logger.error("Database file permissions issue. To fix, run:")
+        logger.error(f"  sudo chown -R $(whoami):$(whoami) ~/.adalflow/")
+        raise PermissionError(
+            f"Cannot write to database file at {db_path}. "
+            "This is likely because the file was created by another user (e.g., root from Docker). "
+            "Please fix permissions with: sudo chown -R $(whoami):$(whoami) ~/.adalflow/"
+        ) from e
+
     return db
 
 def get_github_file_content(repo_url: str, file_path: str, access_token: str = None) -> str:
@@ -828,7 +841,7 @@ class DatabaseManager:
             logger.error(f"Failed to create repository structure: {e}")
             raise
 
-    def prepare_db_index(self, embedder_type: str = None, is_ollama_embedder: bool = None, 
+    def prepare_db_index(self, embedder_type: str = None, is_ollama_embedder: bool = None,
                         excluded_dirs: List[str] = None, excluded_files: List[str] = None,
                         included_dirs: List[str] = None, included_files: List[str] = None) -> List[Document]:
         """
@@ -859,6 +872,12 @@ class DatabaseManager:
                 if documents:
                     logger.info(f"Loaded {len(documents)} documents from existing database")
                     return documents
+            except PermissionError as e:
+                logger.warning(f"Permission denied when accessing database file: {e}")
+                logger.warning(f"Database file at {self.repo_paths['save_db_file']} has incorrect permissions.")
+                logger.warning("Attempting to recreate database. Consider fixing file permissions with: ")
+                logger.warning(f"  sudo chown -R $(whoami):$(whoami) ~/.adalflow/")
+                # Continue to create a new database
             except Exception as e:
                 logger.error(f"Error loading existing database: {e}")
                 # Continue to create a new database

@@ -942,11 +942,21 @@ IMPORTANT:
         // Clean up markdown delimiters
       responseText = responseText.replace(/^```(?:xml)?\s*/i, '').replace(/```\s*$/i, '');
 
+      // Debug: log response text length and first/last 500 chars
+      console.log('=== DEBUG: Wiki Structure Response ===');
+      console.log('Response length:', responseText.length);
+      console.log('First 500 chars:', responseText.substring(0, 500));
+      console.log('Last 500 chars:', responseText.substring(responseText.length - 500));
+      console.log('Contains <wiki_structure>:', responseText.includes('<wiki_structure>'));
+      console.log('Contains </wiki_structure>:', responseText.includes('</wiki_structure>'));
+
       // Extract wiki structure from response
       const xmlMatch = responseText.match(/<wiki_structure>[\s\S]*?<\/wiki_structure>/m);
       if (!xmlMatch) {
+        console.error('No XML match found. Full response:', responseText);
         throw new Error('No valid XML found in response');
       }
+      console.log('XML match found, length:', xmlMatch[0].length);
 
       let xmlText = xmlMatch[0];
       xmlText = xmlText.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');

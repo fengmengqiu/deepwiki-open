@@ -1,6 +1,25 @@
 {
-  "default_provider": "google",
+  "default_provider": "litellm",
   "providers": {
+    "litellm": {
+      "client_class": "LiteLLMClient",
+      "default_model": "claude-haiku-4-5",
+      "supportsCustomModel": true,
+      "models": {
+        "claude-haiku-4-5": {
+          "temperature": 0.7,
+          "top_p": 0.8
+        },
+        "claude-sonnet-4-5": {
+          "temperature": 0.7,
+          "top_p": 0.8
+        },
+        "gemini-2.5-pro": {
+          "temperature": 1.0,
+          "top_p": 0.8
+        }
+      }
+    },
     "dashscope": {
       "default_model": "qwen-plus",
       "supportsCustomModel": true,

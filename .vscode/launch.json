@@ -2,7 +2,7 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Deepwiki-Open",
+            "name": "Backend (Python FastAPI)",
             "type": "python",
             "request": "launch",
             "module": "uvicorn",
@@ -13,7 +13,34 @@
                 "8001"
             ],
             "jinja": true,
-            "justMyCode": true
+            "justMyCode": true,
+        }
+    ],
+    "compounds": [
+        {
+            "name": "🚀 DeepWiki 全栈开发（前端+后端）",
+            "configurations": [
+                "Backend (Python FastAPI)"
+            ],
+            "preLaunchTask": "Start Frontend",
+            "presentation": {
+                "hidden": false,
+                "group": "开发环境",
+                "order": 1
+            },
+            "stopAll": true
+        },
+        {
+            "name": "后端开发（仅 Python）",
+            "configurations": [
+                "Backend (Python FastAPI)"
+            ],
+            "presentation": {
+                "hidden": false,
+                "group": "开发环境",
+                "order": 2
+            },
+            "stopAll": true
         }
     ]
 }
