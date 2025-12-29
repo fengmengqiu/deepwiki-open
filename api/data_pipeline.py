@@ -59,8 +59,11 @@ def count_tokens(text: str, embedder_type: str = None, is_ollama_embedder: bool 
             # Bedrock embedding models vary; use a common GPT-like encoding for rough estimation
             encoding = tiktoken.get_encoding("cl100k_base")
         else:  # OpenAI or default
-            # Use OpenAI embedding model encoding
-            encoding = tiktoken.encoding_for_model("text-embedding-3-small")
+            # Read embedding model from config file
+            from api.config import configs
+            embedder_config = configs.get("embedder", {})
+            model_name = embedder_config.get("model_kwargs", {}).get("model", "text-embedding-3-large")
+            encoding = tiktoken.encoding_for_model(model_name)
 
         return len(encoding.encode(text))
     except Exception as e:
