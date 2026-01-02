@@ -1,21 +1,22 @@
-import adalflow as adal
-from adalflow.core.types import Document, List
-from adalflow.components.data_process import TextSplitter, ToEmbeddings
-import os
-import subprocess
-import json
-import tiktoken
-import logging
 import base64
 import glob
-from adalflow.utils import get_adalflow_default_root_path
-from adalflow.core.db import LocalDB
-from api.config import configs, DEFAULT_EXCLUDED_DIRS, DEFAULT_EXCLUDED_FILES
-from api.ollama_patch import OllamaDocumentProcessor
-from urllib.parse import urlparse, urlunparse, quote
+import json
+import logging
+import os
+import subprocess
+from urllib.parse import quote, urlparse, urlunparse
+
+import adalflow as adal
 import requests
+import tiktoken
+from adalflow.components.data_process import TextSplitter, ToEmbeddings
+from adalflow.core.db import LocalDB
+from adalflow.core.types import Document, List
+from adalflow.utils import get_adalflow_default_root_path
 from requests.exceptions import RequestException
 
+from api.config import DEFAULT_EXCLUDED_DIRS, DEFAULT_EXCLUDED_FILES, configs
+from api.ollama_patch import OllamaDocumentProcessor
 from api.tools.embedder import get_embedder
 
 # Configure logging
@@ -863,6 +864,21 @@ class DatabaseManager:
         Returns:
             List[Document]: List of Document objects
         """
+        def _embedding_vector_length(doc: Document) -> int:
+            vector = getattr(doc, "vector", None)
+            if vector is None:
+                return 0
+            try:
+                if hasattr(vector, "shape"):
+                    if len(vector.shape) == 0:
+                        return 0
+                    return int(vector.shape[-1])
+                if hasattr(vector, "__len__"):
+                    return int(len(vector))
+            except Exception:
+                return 0
+            return 0
+
         # Handle backward compatibility
         if embedder_type is None and is_ollama_embedder is not None:
             embedder_type = 'ollama' if is_ollama_embedder else None
@@ -873,14 +889,24 @@ class DatabaseManager:
                 self.db = LocalDB.load_state(self.repo_paths["save_db_file"])
                 documents = self.db.get_transformed_data(key="split_and_embed")
                 if documents:
-                    logger.info(f"Loaded {len(documents)} documents from existing database")
-                    return documents
-            except PermissionError as e:
-                logger.warning(f"Permission denied when accessing database file: {e}")
-                logger.warning(f"Database file at {self.repo_paths['save_db_file']} has incorrect permissions.")
-                logger.warning("Attempting to recreate database. Consider fixing file permissions with: ")
-                logger.warning(f"  sudo chown -R $(whoami):$(whoami) ~/.adalflow/")
-                # Continue to create a new database
+                    lengths = [_embedding_vector_length(doc) for doc in documents]
+                    non_empty = sum(1 for n in lengths if n > 0)
+                    empty = len(lengths) - non_empty
+                    sample_sizes = sorted({n for n in lengths if n > 0})[:3]
+                    logger.info(
+                        "Loaded %s documents from existing database (embeddings: %s non-empty, %s empty; sample_dims=%s)",
+                        len(documents),
+                        non_empty,
+                        empty,
+                        sample_sizes,
+                    )
+
+                    if non_empty == 0:
+                        logger.warning(
+                            "Existing database contains no usable embeddings. Rebuilding embeddings..."
+                        )
+                    else:
+                        return documents
             except Exception as e:
                 logger.error(f"Error loading existing database: {e}")
                 # Continue to create a new database
