@@ -49,6 +49,45 @@ raw_auth_mode = os.environ.get('DEEPWIKI_AUTH_MODE', 'False')
 WIKI_AUTH_MODE = raw_auth_mode.lower() in ['true', '1', 't']
 WIKI_AUTH_CODE = os.environ.get('DEEPWIKI_AUTH_CODE', '')
 
+# Git domain authentication configuration
+def parse_git_domain_configs():
+    """
+    Parse GIT_AUTH_DOMAIN_* environment variables
+
+    Format: <domain>:<token>:<username>:<email>
+    Example: git-intra.123u.com:glpat-xxx:ai-cr:ai-cr@huanle.com
+
+    Returns:
+        dict: Mapping of domain -> {token, username, email}
+    """
+    domain_configs = {}
+
+    for key, value in os.environ.items():
+        if key.startswith('GIT_AUTH_DOMAIN_'):
+            try:
+                parts = value.split(':', 3)  # Split at most 3 times to avoid splitting email colons
+                if len(parts) >= 4:
+                    domain = parts[0].strip()
+                    token = parts[1].strip()
+                    username = parts[2].strip()
+                    email = parts[3].strip()
+
+                    domain_configs[domain] = {
+                        'token': token,
+                        'username': username,
+                        'email': email
+                    }
+                    logger.info(f"Loaded domain authentication config: {domain}")
+                else:
+                    logger.warning(f"{key} format incorrect, should be: domain:token:username:email")
+            except Exception as e:
+                logger.error(f"Error parsing {key}: {e}")
+
+    return domain_configs
+
+# Parse configuration on module load
+GIT_DOMAIN_CONFIGS = parse_git_domain_configs()
+
 # Embedder settings
 EMBEDDER_TYPE = os.environ.get('DEEPWIKI_EMBEDDER_TYPE', 'openai').lower()
 

@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import { useLanguage } from '@/contexts/LanguageContext';
 import UserSelector from './UserSelector';
 import TokenInput from './TokenInput';
+import { useDomainAuth } from '@/hooks/useDomainAuth';
 
 interface ConfigurationModalProps {
   isOpen: boolean;
@@ -97,6 +98,9 @@ export default function ConfigurationModal({
   isAuthLoading
 }: ConfigurationModalProps) {
   const { messages: t } = useLanguage();
+
+  // Check domain authentication
+  const { domainAuth, isLoading: isCheckingDomain } = useDomainAuth(repositoryInput);
 
   // Show token section state
   const [showTokenSection, setShowTokenSection] = useState(false);
@@ -240,6 +244,9 @@ export default function ConfigurationModal({
               showTokenSection={showTokenSection}
               onToggleTokenSection={() => setShowTokenSection(!showTokenSection)}
               allowPlatformChange={true}
+              hasDomainAuth={domainAuth?.has_domain_auth || false}
+              domainAuthMessage={domainAuth?.message}
+              isCheckingDomain={isCheckingDomain}
             />
 
             {/* Authorization Code Input */}

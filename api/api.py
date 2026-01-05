@@ -144,7 +144,7 @@ class ModelConfig(BaseModel):
 class AuthorizationConfig(BaseModel):
     code: str = Field(..., description="Authorization code")
 
-from api.config import configs, WIKI_AUTH_MODE, WIKI_AUTH_CODE
+from api.config import configs, WIKI_AUTH_MODE, WIKI_AUTH_CODE, GIT_DOMAIN_CONFIGS
 
 @app.get("/lang/config")
 async def get_lang_config():
@@ -163,6 +163,213 @@ async def validate_auth_code(request: AuthorizationConfig):
     Check authorization code.
     """
     return {"success": WIKI_AUTH_CODE == request.code}
+
+@app.get("/git/configured-domains")
+async def get_configured_domains():
+    """
+    Get list of configured internal Git domains
+
+    Returns:
+        {
+            "domains": ["git-intra.123u.com", "git-intra-engine.123u.com", ...],
+            "count": 5
+        }
+
+    Note: Only returns domain names, does not expose tokens or credentials
+    """
+    return {
+        "domains": list(GIT_DOMAIN_CONFIGS.keys()),
+        "count": len(GIT_DOMAIN_CONFIGS)
+    }
+
+@app.post("/git/check-domain")
+async def check_domain_authentication(request: dict):
+    """
+    Check if repository URL has configured domain authentication
+
+    Request body:
+        {
+            "repo_url": "https://git-intra.123u.com/owner/repo"
+        }
+
+    Returns:
+        {
+            "has_domain_auth": true,
+            "domain": "git-intra.123u.com",
+            "message": "This repository uses pre-configured company credentials"
+        }
+    """
+    from api.data_pipeline import match_domain_config
+    from urllib.parse import urlparse
+
+    repo_url = request.get("repo_url", "")
+
+    if not repo_url:
+        raise HTTPException(status_code=400, detail="repo_url is required")
+
+    domain_config = match_domain_config(repo_url)
+
+    if domain_config:
+        parsed = urlparse(repo_url)
+        return {
+            "has_domain_auth": True,
+            "domain": parsed.netloc,
+            "message": "This repository uses pre-configured company credentials"
+        }
+    else:
+        return {
+            "has_domain_auth": False,
+            "domain": None,
+            "message": "Personal access token required"
+        }
+
+@app.post("/git/repository-structure")
+async def get_repository_structure(request: dict):
+    """
+    Get GitLab/GitHub/Bitbucket repository file structure and README
+
+    Request body:
+        {
+            "repo_url": "https://git-intra.123u.com/owner/repo",
+            "repo_type": "gitlab",  # github | gitlab | bitbucket
+            "access_token": "xxx" (optional, ignored if domain auth is configured)
+        }
+
+    Returns:
+        {
+            "file_tree": "file1.py\\nfile2.js\\n...",
+            "readme": "# README content...",
+            "default_branch": "main",
+            "project_id": 123 (GitLab only)
+        }
+    """
+    import requests
+    from urllib.parse import urlparse, quote
+    from api.data_pipeline import match_domain_config
+
+    repo_url = request.get("repo_url", "")
+    repo_type = request.get("repo_type", "gitlab")
+    user_token = request.get("access_token", "")
+
+    if not repo_url:
+        raise HTTPException(status_code=400, detail="repo_url is required")
+
+    # 1. Check domain authentication and get token
+    domain_config = match_domain_config(repo_url)
+    effective_token = domain_config['token'] if domain_config else user_token
+
+    if not effective_token:
+        raise HTTPException(status_code=400, detail="No authentication token available")
+
+    # 2. Call appropriate API based on repo_type
+    if repo_type == "gitlab":
+        return await _get_gitlab_structure(repo_url, effective_token)
+    elif repo_type == "github":
+        return await _get_github_structure(repo_url, effective_token)
+    elif repo_type == "bitbucket":
+        return await _get_bitbucket_structure(repo_url, effective_token)
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported repo_type: {repo_type}")
+
+
+async def _get_gitlab_structure(repo_url: str, token: str):
+    """Get GitLab repository structure"""
+    import requests
+    from urllib.parse import urlparse, quote
+
+    try:
+        parsed = urlparse(repo_url)
+        domain = f"{parsed.scheme}://{parsed.netloc}"
+        project_path = parsed.path.strip('/').replace('.git', '')
+        encoded_path = quote(project_path, safe='')
+
+        headers = {"PRIVATE-TOKEN": token}
+
+        # 1. Get project info
+        project_url = f"{domain}/api/v4/projects/{encoded_path}"
+        logger.info(f"Fetching GitLab project: {project_url}")
+
+        project_resp = requests.get(project_url, headers=headers, timeout=10)
+
+        if not project_resp.ok:
+            error_detail = project_resp.text
+            logger.error(f"GitLab API error: Status {project_resp.status_code}, Response: {error_detail}")
+            raise HTTPException(
+                status_code=project_resp.status_code,
+                detail=f"GitLab API error: {error_detail}"
+            )
+
+        project_info = project_resp.json()
+        default_branch = project_info.get('default_branch', 'main')
+        project_id = project_info.get('id')
+        logger.info(f"GitLab project ID: {project_id}, default branch: {default_branch}")
+
+        # 2. Get file tree
+        tree_url = f"{domain}/api/v4/projects/{encoded_path}/repository/tree"
+        params = {"recursive": "true", "per_page": "100"}
+
+        all_files = []
+        page = 1
+        while True:
+            params['page'] = str(page)
+            tree_resp = requests.get(tree_url, headers=headers, params=params, timeout=30)
+
+            if not tree_resp.ok:
+                logger.warning(f"Failed to fetch page {page} of file tree")
+                break
+
+            page_files = tree_resp.json()
+            if not page_files:
+                break
+
+            all_files.extend(page_files)
+            logger.info(f"Fetched {len(page_files)} files from page {page}")
+
+            # Check for next page
+            next_page = tree_resp.headers.get('x-next-page')
+            if not next_page:
+                break
+            page = int(next_page)
+
+        # 3. Format file tree
+        file_tree = '\n'.join([
+            f['path'] for f in all_files if f.get('type') == 'blob'
+        ])
+        logger.info(f"Total files fetched: {len(all_files)}")
+
+        # 4. Get README.md
+        readme_content = ""
+        readme_url = f"{domain}/api/v4/projects/{encoded_path}/repository/files/README.md/raw"
+        try:
+            readme_resp = requests.get(readme_url, headers=headers, timeout=10)
+            if readme_resp.ok:
+                readme_content = readme_resp.text
+                logger.info("Successfully fetched README.md")
+        except Exception as e:
+            logger.warning(f"Could not fetch README.md: {e}")
+
+        return {
+            "file_tree": file_tree,
+            "readme": readme_content,
+            "default_branch": default_branch,
+            "project_id": project_id
+        }
+
+    except requests.RequestException as e:
+        logger.error(f"Error fetching GitLab repository structure: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def _get_github_structure(repo_url: str, token: str):
+    """Get GitHub repository structure"""
+    # TODO: Implement GitHub proxy logic
+    raise HTTPException(status_code=501, detail="GitHub proxy not implemented yet")
+
+
+async def _get_bitbucket_structure(repo_url: str, token: str):
+    """Get Bitbucket repository structure"""
+    # TODO: Implement Bitbucket proxy logic
+    raise HTTPException(status_code=501, detail="Bitbucket proxy not implemented yet")
 
 @app.get("/models/config", response_model=ModelConfig)
 async def get_model_config():

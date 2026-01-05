@@ -206,9 +206,11 @@ export default function Home() {
     else if (customGitRegex.test(input)) {
       // Detect repository type based on domain
       const domain = extractUrlDomain(input);
-      if (domain?.includes('github.com')) {
+      if (domain?.includes('github.com') || domain?.includes('github.')) {
         type = 'github';
-      } else if (domain?.includes('gitlab.com') || domain?.includes('gitlab.')) {
+      } else if (domain?.includes('gitlab.com') ||
+                 domain?.includes('gitlab.') ||
+                 domain?.includes('git-intra')) {  // Support company internal GitLab domains
         type = 'gitlab';
       } else if (domain?.includes('bitbucket.org') || domain?.includes('bitbucket.')) {
         type = 'bitbucket';
@@ -349,7 +351,8 @@ export default function Home() {
       params.append('token', accessToken);
     }
     // Always include the type parameter
-    params.append('type', (type == 'local' ? type : selectedPlatform) || 'github');
+    // Prioritize detected type over selected platform
+    params.append('type', type !== 'web' ? type : selectedPlatform);
     // Add local path if it exists
     if (localPath) {
       params.append('local_path', encodeURIComponent(localPath));

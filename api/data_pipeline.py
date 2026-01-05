@@ -15,7 +15,7 @@ from adalflow.core.types import Document, List
 from adalflow.utils import get_adalflow_default_root_path
 from requests.exceptions import RequestException
 
-from api.config import DEFAULT_EXCLUDED_DIRS, DEFAULT_EXCLUDED_FILES, configs
+from api.config import DEFAULT_EXCLUDED_DIRS, DEFAULT_EXCLUDED_FILES, configs, GIT_DOMAIN_CONFIGS
 from api.ollama_patch import OllamaDocumentProcessor
 from api.tools.embedder import get_embedder
 
@@ -24,6 +24,34 @@ logger = logging.getLogger(__name__)
 
 # Maximum token limit for OpenAI embedding models
 MAX_EMBEDDING_TOKENS = 8192
+
+def match_domain_config(repo_url: str) -> dict | None:
+    """
+    Check if repository URL matches a configured domain authentication
+
+    Args:
+        repo_url: Repository URL (e.g., https://git-intra.123u.com/owner/repo)
+
+    Returns:
+        Matched domain configuration {token, username, email}, or None if no match
+    """
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(repo_url)
+        repo_domain = parsed.netloc.lower()
+
+        # Check all configured domains
+        for domain, config in GIT_DOMAIN_CONFIGS.items():
+            if domain.lower() == repo_domain:
+                logger.info(f"Repository URL matched domain configuration: {domain}")
+                return config
+
+        logger.debug(f"Repository URL {repo_url} did not match any domain configuration")
+        return None
+    except Exception as e:
+        logger.error(f"Error matching domain: {e}")
+        return None
 
 def count_tokens(text: str, embedder_type: str = None, is_ollama_embedder: bool = None) -> int:
     """
@@ -76,18 +104,28 @@ def count_tokens(text: str, embedder_type: str = None, is_ollama_embedder: bool 
 def download_repo(repo_url: str, local_path: str, repo_type: str = None, access_token: str = None) -> str:
     """
     Downloads a Git repository (GitHub, GitLab, or Bitbucket) to a specified local path.
+    Supports domain-based authentication.
 
     Args:
         repo_type(str): Type of repository
         repo_url (str): The URL of the Git repository to clone.
         local_path (str): The local directory where the repository will be cloned.
         access_token (str, optional): Access token for private repositories.
+                                    If domain is configured, domain token will be used instead.
 
     Returns:
         str: The output message from the `git` command.
     """
     try:
-        # Check if Git is installed
+        # 1. Check if domain authentication is configured
+        domain_config = match_domain_config(repo_url)
+        if domain_config:
+            from urllib.parse import urlparse
+            logger.info(f"Using domain authentication: {urlparse(repo_url).netloc}")
+            access_token = domain_config['token']
+            # Note: username and email are not used for cloning, may be used for future git config
+
+        # 2. Check if Git is installed
         logger.info(f"Preparing to clone repository to {local_path}")
         subprocess.run(
             ["git", "--version"],
